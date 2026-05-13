@@ -2,13 +2,18 @@
 """
 Tool đổi tên ảnh hàng loạt với nhiều tùy chọn
 Cách sử dụng:
-    python3 main.py <thư_mục> <pattern> [--convert] [--preview]
+    rename-images <thư_mục> <pattern> [--convert] [--preview] [--start N] [--compress [QUALITY]]
+    hoặc (khi chạy trực tiếp file):
+    python3 main.py <thư_mục> <pattern> [--convert] [--preview] [--start N] [--compress [QUALITY]]
     
 Ví dụ:
-    python3 main.py /home/images photo_{i}.png
-    python3 main.py /home/images IMG_{date}.jpg
-    python3 main.py /home/images picture_{i:04d}.png --convert
-    python3 main.py /home/images picture_{i:04d}.png --preview
+    rename-images /home/images photo_{i}.png
+    rename-images /home/images IMG_{date}.jpg
+    rename-images /home/images picture_{i:04d}.png --convert
+    rename-images /home/images picture_{i:04d}.png --preview
+    rename-images /home/images image_{i}.jpg --start 0
+    rename-images /home/images image_{i}.jpg --compress
+    rename-images /home/images image_{i}.jpg --compress 75
     
 Pattern hỗ trợ:
     {i} - Số thứ tự (1, 2, 3...)
@@ -21,6 +26,7 @@ Pattern hỗ trợ:
 import os
 import sys
 import shutil
+import argparse
 from datetime import datetime
 from pathlib import Path
 from PIL import Image
@@ -57,6 +63,27 @@ def convert_image(source_path, target_ext):
         print(f"❌ Lỗi khi convert {source_path}: {e}")
         return None
 
+def get_save_kwargs(ext, compress_quality):
+    if compress_quality is None:
+        return {}
+
+    quality = max(1, min(100, compress_quality))
+
+    if ext in ['.jpg', '.jpeg']:
+        return {'quality': quality, 'optimize': True}
+    if ext == '.png':
+        compress_level = int(round((100 - quality) * 9 / 100))
+        return {'optimize': True, 'compress_level': compress_level}
+    if ext == '.webp':
+        return {'quality': quality, 'method': 6}
+    if ext in ['.tiff', '.bmp']:
+        return {'optimize': True}
+    return {}
+
+def save_image(img, path, ext, compress_quality=None):
+    save_kwargs = get_save_kwargs(ext, compress_quality)
+    img.save(path, **save_kwargs)
+
 def generate_filename(pattern, index, total):
     now = datetime.now()
     filename = pattern
@@ -77,7 +104,7 @@ def generate_filename(pattern, index, total):
 
     return filename
 
-def rename_images(directory, pattern, convert_mode=False, preview=False):
+def rename_images(directory, pattern, convert_mode=False, preview=False, start_index=1, compress_quality=None):
     if not os.path.isdir(directory):
         print(f"❌ Thư mục không tồn tại: {directory}")
         return
@@ -103,13 +130,20 @@ def rename_images(directory, pattern, convert_mode=False, preview=False):
     print(f"✅ Tìm thấy {len(image_files)} ảnh")
     print(f"📁 Thư mục: {directory}")
     print(f"📝 Pattern: {pattern}")
+    print(f"🔢 Bắt đầu đánh số từ: {start_index}")
+    if compress_quality is not None:
+        print(f"🗜️  Nén ảnh: BẬT (mức chất lượng {compress_quality})")
+    else:
+        print(f"🗜️  Nén ảnh: TẮT")
     print(f"👀 Chế độ Preview: {'BẬT' if preview else 'TẮT'}")
     print("\n" + "="*50)
     
     backup_dir = os.path.join(directory, '.backup_' + datetime.now().strftime('%Y%m%d_%H%M%S'))
     success_count = 0
 
-    for idx, old_filename in enumerate(image_files, start=1):
+    total_files = len(image_files)
+    for seq, old_filename in enumerate(image_files, start=1):
+        idx = start_index + seq - 1
         old_path = os.path.join(directory, old_filename)
         old_ext = Path(old_filename).suffix.lower()
         new_filename = generate_filename(pattern, idx, len(image_files))
@@ -118,26 +152,43 @@ def rename_images(directory, pattern, convert_mode=False, preview=False):
         new_path = os.path.join(directory, new_filename)
 
         if preview:
-            print(f"👁️  [{idx}/{len(image_files)}] Sẽ đổi:")
+            print(f"👁️  [{seq}/{total_files}] Sẽ đổi:")
             print(f"   {old_filename} -> {new_filename}")
             continue
 
         try:
             if convert_mode and target_ext and old_ext != target_ext:
-                print(f"🔄 [{idx}/{len(image_files)}] Convert & Đổi tên:")
+                print(f"🔄 [{seq}/{total_files}] Convert & Đổi tên:")
                 print(f"   {old_filename} -> {new_filename}")
                 img = convert_image(old_path, target_ext)
                 if img:
                     if not os.path.exists(backup_dir):
                         os.makedirs(backup_dir)
                     shutil.copy2(old_path, os.path.join(backup_dir, old_filename))
-                    img.save(new_path)
+                    save_image(img, new_path, target_ext, compress_quality)
                     os.remove(old_path)
                     success_count += 1
                 else:
                     print(f"   ⚠️ Bỏ qua do lỗi convert")
+            elif compress_quality is not None:
+                print(f"🗜️  [{seq}/{total_files}] Nén & Đổi tên:")
+                print(f"   {old_filename} -> {new_filename}")
+                with Image.open(old_path) as source_img:
+                    img = source_img.copy()
+                if old_ext in ['.jpg', '.jpeg'] and img.mode in ('RGBA', 'LA', 'P'):
+                    bg = Image.new('RGB', img.size, (255, 255, 255))
+                    if img.mode == 'P':
+                        img = img.convert('RGBA')
+                    bg.paste(img, mask=img.split()[-1] if img.mode in ('RGBA', 'LA') else None)
+                    img = bg
+                if not os.path.exists(backup_dir):
+                    os.makedirs(backup_dir)
+                shutil.copy2(old_path, os.path.join(backup_dir, old_filename))
+                save_image(img, new_path, old_ext, compress_quality)
+                os.remove(old_path)
+                success_count += 1
             else:
-                print(f"✏️  [{idx}/{len(image_files)}] Đổi tên:")
+                print(f"✏️  [{seq}/{total_files}] Đổi tên:")
                 print(f"   {old_filename} -> {new_filename}")
                 if not os.path.exists(backup_dir):
                     os.makedirs(backup_dir)
@@ -155,20 +206,39 @@ def rename_images(directory, pattern, convert_mode=False, preview=False):
         print(f"💾 Backup được lưu tại: {backup_dir}")
 
 def main():
-    if len(sys.argv) < 3:
-        print(__doc__)
-        sys.exit(1)
+    parser = argparse.ArgumentParser(
+        description='Tool đổi tên ảnh hàng loạt với nhiều tùy chọn'
+    )
+    parser.add_argument('directory', help='Thư mục chứa ảnh')
+    parser.add_argument('pattern', help='Pattern đặt tên mới, ví dụ: photo_{i}.jpg')
+    parser.add_argument('-c', '--convert', action='store_true', help='Convert ảnh theo đuôi file trong pattern')
+    parser.add_argument('-p', '--preview', action='store_true', help='Chỉ xem trước, không ghi thay đổi')
+    parser.add_argument('--start', type=int, default=1, help='Số bắt đầu cho {i}, ví dụ 0, 1, n (mặc định: 1)')
+    parser.add_argument(
+        '-z', '--compress',
+        nargs='?',
+        const=85,
+        type=int,
+        help='Bật nén ảnh, có thể truyền mức chất lượng 1-100 (mặc định khi không truyền: 85)'
+    )
 
-    directory = sys.argv[1]
-    pattern = sys.argv[2]
-    convert_mode = '--convert' in sys.argv or '-c' in sys.argv
-    preview_mode = '--preview' in sys.argv or '-p' in sys.argv
+    args = parser.parse_args()
+
+    if args.compress is not None and not (1 <= args.compress <= 100):
+        parser.error('--compress chỉ nhận giá trị từ 1 đến 100')
 
     print("="*50)
     print("🖼️  TOOL ĐỔI TÊN ẢNH HÀNG LOẠT")
     print("="*50)
 
-    rename_images(directory, pattern, convert_mode, preview_mode)
+    rename_images(
+        args.directory,
+        args.pattern,
+        args.convert,
+        args.preview,
+        start_index=args.start,
+        compress_quality=args.compress
+    )
 
 if __name__ == '__main__':
     main()

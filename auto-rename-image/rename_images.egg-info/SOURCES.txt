@@ -1,0 +1,9 @@
+README.md
+main.py
+setup.py
+rename_images.egg-info/PKG-INFO
+rename_images.egg-info/SOURCES.txt
+rename_images.egg-info/dependency_links.txt
+rename_images.egg-info/entry_points.txt
+rename_images.egg-info/requires.txt
+rename_images.egg-info/top_level.txt

@@ -25,7 +25,8 @@ Tùy chọn:
 
 import os
 import sys
-from pdf2image import convert_from_path
+from pdf2image import convert_from_path, pdfinfo_from_path
+from pdf2image.exceptions import PDFInfoNotInstalledError, PDFPageCountError, PDFSyntaxError
 from PIL import Image
 
 def parse_pages(pages_str):
@@ -69,10 +70,18 @@ def split_image(img, mode):
         ]
     return [img]
 
+def normalize_format(fmt):
+    fmt = fmt.lower()
+    if fmt == "jpg":
+        return "jpeg"
+    return fmt
+
 def process_pdf(pdf_path, dpi=300, split_mode=None, pages=None, pattern="page_{i}.png", out_format="png", preview=False):
     if not os.path.exists(pdf_path):
         print(f"❌ Không tìm thấy file: {pdf_path}")
         return
+
+    out_format = normalize_format(out_format)
 
     print(f"📄 File PDF: {pdf_path}")
     print(f"🔧 Cấu hình: DPI={dpi}, Split={'Không' if not split_mode else split_mode}, Format={out_format}")
@@ -81,33 +90,84 @@ def process_pdf(pdf_path, dpi=300, split_mode=None, pages=None, pattern="page_{i
         print(f"📑 Trang cần xử lý: {pages}")
     print("=" * 50)
 
-    # Chuyển PDF sang ảnh
-    print("🔄 Đang chuyển đổi PDF sang ảnh...")
-    images = convert_from_path(pdf_path, dpi=dpi, fmt=out_format)
-    print(f"✅ Đã tách {len(images)} trang")
+    try:
+        pdf_info = pdfinfo_from_path(pdf_path)
+        total_pages = int(pdf_info.get("Pages", 0))
+    except PDFInfoNotInstalledError:
+        print("❌ Thiếu Poppler (pdfinfo/pdftoppm). Hãy cài Poppler trước khi chạy.")
+        print("   Ubuntu/Debian: sudo apt install poppler-utils")
+        return
+    except (PDFPageCountError, ValueError):
+        print("❌ Không đọc được số trang PDF. File có thể bị lỗi hoặc không hợp lệ.")
+        return
+    except Exception as err:
+        print(f"❌ Lỗi khi đọc thông tin PDF: {err}")
+        return
+
+    if total_pages <= 0:
+        print("❌ PDF không có trang hợp lệ để xử lý.")
+        return
+
+    if pages:
+        target_pages = [page for page in pages if 1 <= page <= total_pages]
+        invalid_pages = [page for page in pages if page < 1 or page > total_pages]
+        if invalid_pages:
+            print(f"⚠️ Bỏ qua trang không hợp lệ: {invalid_pages} (PDF có {total_pages} trang)")
+    else:
+        target_pages = list(range(1, total_pages + 1))
+
+    if not target_pages:
+        print("❌ Không có trang hợp lệ để xử lý.")
+        return
 
     count = 1
     preview_list = []
 
-    for i, img in enumerate(images, start=1):
-        if pages and i not in pages:
-            continue
-
-        parts = split_image(img, split_mode) if split_mode else [img]
-        for part in parts:
-            filename = generate_filename(pattern, count, out_format)
-            preview_list.append(filename)
-            if not preview:
-                part.save(filename, out_format.upper())
-            count += 1
-
     if preview:
+        for _ in target_pages:
+            parts_count = 2 if split_mode in ("vertical", "horizontal") else 1
+            for _ in range(parts_count):
+                filename = generate_filename(pattern, count, out_format)
+                preview_list.append(filename)
+                count += 1
+
         print("\n🧾 Preview file sẽ được tạo:")
         for f in preview_list:
             print(f" - {f}")
         print(f"\n🔍 Tổng cộng: {len(preview_list)} file (chưa tạo thật)")
-    else:
-        print(f"\n🎉 Hoàn tất! Đã tạo {count - 1} ảnh.")
+        return
+
+    print(f"🔄 Đang chuyển đổi {len(target_pages)} trang PDF sang ảnh...")
+    for index, page_number in enumerate(target_pages, start=1):
+        print(f"   • Trang {page_number} ({index}/{len(target_pages)})")
+        try:
+            images = convert_from_path(
+                pdf_path,
+                dpi=dpi,
+                fmt=out_format,
+                first_page=page_number,
+                last_page=page_number,
+            )
+        except PDFSyntaxError:
+            print(f"❌ Lỗi cú pháp PDF ở trang {page_number}. Dừng xử lý.")
+            return
+        except Exception as err:
+            print(f"❌ Không thể chuyển trang {page_number}: {err}")
+            return
+
+        if not images:
+            print(f"⚠️ Trang {page_number} không tạo được ảnh, bỏ qua.")
+            continue
+
+        img = images[0]
+        parts = split_image(img, split_mode) if split_mode else [img]
+        for part in parts:
+            filename = generate_filename(pattern, count, out_format)
+            preview_list.append(filename)
+            part.save(filename, out_format.upper())
+            count += 1
+
+    print(f"\n🎉 Hoàn tất! Đã tạo {count - 1} ảnh.")
 
 def main():
     if len(sys.argv) < 2:
